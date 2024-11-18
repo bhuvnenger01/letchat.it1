@@ -1,0 +1,10 @@
+Flask
+flask-cors
+flask-socketio
+pymongo[srv]
+pyjwt
+bcrypt
+cryptography
+eventlet
+gevent
+gevent-websocket
