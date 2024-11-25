@@ -13,10 +13,16 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes
 import base64
 import os
+from flask_jwt_extended import JWTManager
+from flask_jwt_extended import (create_access_token,create_refresh_token,get_jwt_identity,jwt_required,
+ set_access_cookies,set_refresh_cookies,unset_jwt_cookies,)
 
 app = Flask(__name__)
 app.secret_key = '6737a042b48a581b59cda9e5'
-CORS(app)
+app.config['JWT_SECRET_KEY'] = '6737a042b48a581b59cda9e6'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 300  # Expiration time in seconds (5 minutes)
+app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=7)    # Refresh token expiry
+CORS(app, resources={r"/*": {"origins": "*"}},supports_credentials=True)  # Allow cookies/sessions if needed
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # MongoDB setup
@@ -25,7 +31,7 @@ db = client['chat-data']
 user_collection = db['users']
 
 # Secret key for JWT
-JWT_SECRET = '6737a042b48a581b59cda9e6'
+jwt = JWTManager(app)
 
 # Generate RSA key pair
 private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -42,7 +48,7 @@ def get_public_key():
 # Function to verify JWT token
 def verify_token(token):
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, 'JWT_SECRET_KEY', algorithms=["HS256"])
         return payload['username']  # Return the username from the payload if valid
     except jwt.ExpiredSignatureError:
         return None
@@ -78,6 +84,7 @@ def register():
     user_collection.insert_one({'username': username, 'password': hashed_password})
     return jsonify({"message": "User registered successfully"}), 201
 
+# Login route - Issue both access and refresh tokens
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -86,15 +93,33 @@ def login():
 
     user = user_collection.find_one({'username': username})
     if user and bcrypt.checkpw(password.encode('utf-8'), user['password']):
-        token = jwt.encode(
-            {'username': username, 'exp': datetime.now(timezone.utc) + timedelta(days=1)},
-            JWT_SECRET,
-            algorithm="HS256"
-        )
-        print("token",token)
-        return jsonify({"token": token}), 200
+        # Issue tokens
+        access_token = create_access_token(identity=username)
+        refresh_token = create_refresh_token(identity=username)
+
+        response = jsonify({"message": "Login successful", "accessToken": access_token, "refreshToken": refresh_token})
+        set_access_cookies(response, access_token)
+        set_refresh_cookies(response, refresh_token)
+        return response, 200
     else:
         return jsonify({"message": "Invalid username or password"}), 401
+
+# Refresh token route - Issue a new access token
+@app.route('/refresh', methods=['POST'])
+@jwt_required(refresh=True)  # Requires a valid refresh token
+def refresh():
+    current_user = get_jwt_identity()
+    new_access_token = create_access_token(identity=current_user)
+    response = jsonify({"accessToken": new_access_token})
+    set_access_cookies(response, new_access_token)
+    return response, 200
+
+# Logout route - Clear JWT cookies
+@app.route('/logout', methods=['POST'])
+def logout():
+    response = jsonify({"message": "Logout successful"})
+    unset_jwt_cookies(response)
+    return response, 200
 
 
 @app.route('/chat', methods=['GET'])
@@ -151,4 +176,5 @@ def handle_message(data):
 
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    socketio.run(app, host="0.0.0.0", port=port)
