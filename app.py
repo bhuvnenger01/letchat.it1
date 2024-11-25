@@ -1,11 +1,9 @@
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room, send
-import datetime
-import jwt
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import bcrypt
 from pymongo import MongoClient
-from datetime import datetime, timedelta, timezone
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -13,24 +11,22 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes
 import base64
 import os
-from flask_jwt_extended import JWTManager
-from flask_jwt_extended import (create_access_token,create_refresh_token,get_jwt_identity,jwt_required,
- set_access_cookies,set_refresh_cookies,unset_jwt_cookies,)
+import datetime
 
+# Flask app setup
 app = Flask(__name__)
 app.secret_key = '6737a042b48a581b59cda9e5'
 app.config['JWT_SECRET_KEY'] = '6737a042b48a581b59cda9e6'
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 300  # Expiration time in seconds (5 minutes)
-app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=7)    # Refresh token expiry
-CORS(app, resources={r"/*": {"origins": "*"}},supports_credentials=True)  # Allow cookies/sessions if needed
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = datetime.timedelta(minutes=60)  # Tokens expire in 60 minutes
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # MongoDB setup
-client = MongoClient('mongodb+srv://bhuvicoder01:9806671598@chat-data.lzjht.mongodb.net/',tls=True, tlsAllowInvalidCertificates=True)
+client = MongoClient('mongodb+srv://bhuvicoder01:9806671598@chat-data.lzjht.mongodb.net/', tls=True, tlsAllowInvalidCertificates=True)
 db = client['chat-data']
 user_collection = db['users']
 
-# Secret key for JWT
+# JWT Manager
 jwt = JWTManager(app)
 
 # Generate RSA key pair
@@ -45,32 +41,6 @@ def get_public_key():
     )
     return jsonify({'publicKey': pem_public_key.decode('utf-8')})
 
-# Function to verify JWT token
-def verify_token(token):
-    try:
-        payload = jwt.decode(token, 'JWT_SECRET_KEY', algorithms=["HS256"])
-        return payload['username']  # Return the username from the payload if valid
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
-        return None
-
-@app.route('/protected', methods=['GET'])
-def protected():
-    # Get the token from the Authorization header
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        return jsonify({"message": "Missing or invalid token"}), 401
-
-    token = auth_header.split(' ')[1]  # Extract the token part
-    username = verify_token(token)  # Verify the token using the verify_token function
-
-    if not username:
-        return jsonify({"message": "Invalid or expired token"}), 401
-
-    return jsonify({"username": username}), 200
-
-
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -84,7 +54,6 @@ def register():
     user_collection.insert_one({'username': username, 'password': hashed_password})
     return jsonify({"message": "User registered successfully"}), 201
 
-# Login route - Issue both access and refresh tokens
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -93,45 +62,21 @@ def login():
 
     user = user_collection.find_one({'username': username})
     if user and bcrypt.checkpw(password.encode('utf-8'), user['password']):
-        # Issue tokens
         access_token = create_access_token(identity=username)
-        refresh_token = create_refresh_token(identity=username)
-
-        response = jsonify({"message": "Login successful", "accessToken": access_token, "refreshToken": refresh_token})
-        set_access_cookies(response, access_token)
-        set_refresh_cookies(response, refresh_token)
-        return response, 200
+        return jsonify({"token": access_token}), 200
     else:
         return jsonify({"message": "Invalid username or password"}), 401
 
-# Refresh token route - Issue a new access token
-@app.route('/refresh', methods=['POST'])
-@jwt_required(refresh=True)  # Requires a valid refresh token
-def refresh():
-    current_user = get_jwt_identity()
-    new_access_token = create_access_token(identity=current_user)
-    response = jsonify({"accessToken": new_access_token})
-    set_access_cookies(response, new_access_token)
-    return response, 200
-
-# Logout route - Clear JWT cookies
-@app.route('/logout', methods=['POST'])
-def logout():
-    response = jsonify({"message": "Logout successful"})
-    unset_jwt_cookies(response)
-    return response, 200
-
+@app.route('/protected', methods=['GET'])
+@jwt_required()
+def protected():
+    username = get_jwt_identity()  # Extract username from the token
+    return jsonify({"username": username}), 200
 
 @app.route('/chat', methods=['GET'])
+@jwt_required()
 def chat():
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        return jsonify({"message": "Missing or invalid token"}), 401
-    token = auth_header.split(' ')[1]  # Extract the token part
-    username = verify_token(token)  # Verify the token using the verify_token function
-    if not username:
-        return jsonify({"message": "Invalid or expired token"}), 401
-    
+    username = get_jwt_identity()
     return jsonify({'message': f'Welcome to the chat, {username}'}), 200  # Chat accessible
 
 # SocketIO events for chat
@@ -142,39 +87,16 @@ def on_join(data):
     join_room(room)
     send(f"{username} has joined the room.", to=room)
 
-@socketio.on('leave')
-def on_leave(data):
-    username = data['username']
-    room = data['room']
-    leave_room(room)
-    send(f"{username} has left the room.", to=room)
 
 @socketio.on('message')
 def handle_message(data):
-    encrypted_message = data['encryptedMessage']
-    encrypted_key = data['encryptedKey']
-
-    # Decrypt the AES key with the server's private key
-    aes_key = private_key.decrypt(
-        base64.b64decode(encrypted_key),
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
-
-    # Decrypt the message with the AES key
-    iv = aes_key  # In this example, the IV is the same as the AES key
-    cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv))
-    decryptor = cipher.decryptor()
-    decrypted_message = decryptor.update(base64.b64decode(encrypted_message)) + decryptor.finalize()
-
-    # Broadcast the decrypted message
+    message = data['message']  # Receive plaintext message
     room = data['room']
-    send(f"{data['username']}: {decrypted_message.decode('utf-8')}", to=room)
-
+    username = data['username']
+    
+    # Broadcast the plaintext message
+    send(f"{username}: {message}", to=room)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    socketio.run(app, host="0.0.0.0", port=port)
+    socketio.run(app, host="0.0.0.0",debug=True, port=port)

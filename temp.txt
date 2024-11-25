@@ -1,0 +1,317 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TextInput, Button, Alert, StyleSheet, BackHandler, Platform, TouchableOpacity,Animated,Dimensions } from 'react-native';
+import axios from 'axios';
+import * as SecureStore from 'expo-secure-store';
+import { useRouter } from 'expo-router';
+import { HoverEffect } from 'react-native-gesture-handler';
+import handleRegister from "./Register"
+import { Ionicons } from '@expo/vector-icons';
+
+const { width } = Dimensions.get("window");
+
+export default function LoginScreen() {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const router = useRouter();
+  const [isLogin, setIsLogin] = useState(true); // State to toggle between Login and Sign Up
+  const translateX = useRef(new Animated.Value(0)).current; // Animation value for form sliding
+  const [isSignUp, setIsSignUp] = useState(false);
+
+  // Function to toggle between Login and Sign Up
+  const toggleForm = () => {
+    Animated.timing(translateX, {
+      toValue: isLogin ? -width : 0, // Slide left for Login, reset for Sign Up
+      duration: 500,
+      useNativeDriver: true,
+    }).start(() => setIsLogin(!isLogin));
+  };
+
+  // Helper functions for session management
+  const saveToken = async (token: string, expiration: number) => {
+    token=JSON.stringify(token);
+    if (Platform.OS === 'web') {
+      localStorage.setItem('userToken', token);
+      localStorage.setItem('tokenExpiration', expiration.toString());
+    } else {
+      await SecureStore.setItemAsync('userToken', token);
+      await SecureStore.setItemAsync('tokenExpiration', expiration.toString());
+    }
+  };
+
+  const getToken = async (): Promise<{ token: string | null; expiration: number | null }> => {
+    let token, expiration;
+    if (Platform.OS === 'web') {
+      token = localStorage.getItem('userToken');
+      expiration = localStorage.getItem('tokenExpiration');
+    } else {
+      token = await SecureStore.getItemAsync('userToken');
+      expiration = await SecureStore.getItemAsync('tokenExpiration');
+    }
+    return { token, expiration: expiration ? parseInt(expiration) : null };
+  };
+
+  const clearToken = async () => {
+    if (Platform.OS === 'web') {
+      localStorage.removeItem('userToken');
+      localStorage.removeItem('tokenExpiration');
+    } else {
+      await SecureStore.deleteItemAsync('userToken');
+      await SecureStore.deleteItemAsync('tokenExpiration');
+    }
+  };
+
+  useEffect(() => {
+    // Back button handling
+    const handleBackAction = () => {
+      router.replace('/');
+      return true; // Prevent default behavior
+    };
+
+    if (Platform.OS !== 'web') {
+      const backHandler = BackHandler.addEventListener('hardwareBackPress', handleBackAction);
+      return () => backHandler.remove(); // Cleanup
+    }
+  }, [router]);
+
+
+
+  const handleLogin = async () => {
+    try {
+      const response = await axios.post('http://192.168.231.237:5000/login', { username, password });
+      const token = response.data.token;
+      const expiration = Date.now() + 60 * 60 * 1000; // 1-hour token validity
+      await saveToken(token, expiration);
+      Alert.alert('Login Successful');
+      router.replace('/(tabs)/ChatRoom');
+    } catch (error) {
+      Alert.alert('Error', 'Invalid credentials. Please try again.');
+      console.error(error)
+    }
+  };
+
+  const handleSessionCheck = async () => {
+    const { expiration } = await getToken();
+    if (expiration && Date.now() > expiration - 5 * 60 * 1000) {
+      Alert.alert(
+        'Session Expiring Soon',
+        'Your session will expire soon. Would you like to extend it?',
+        [
+          { text: 'Yes', onPress: refreshSession },
+          { text: 'No', onPress: handleLogout },
+        ]
+      );
+    }
+  };
+
+  const refreshSession = async () => {
+    try {
+      const { token } = await getToken();
+      if (token) {
+        const response = await axios.post('http://192.168.231.237:5000/refresh', { token });
+        const newToken = response.data.token;
+        const newExpiration = Date.now() + 60 * 60 * 1000;
+        await saveToken(newToken, newExpiration);
+        Alert.alert('Session Extended', 'Your session has been extended.');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Unable to extend session. Please log in again.');
+      handleLogout();
+    }
+  };
+
+  const handleLogout = async () => {
+    await clearToken();
+    Alert.alert('Logged Out', 'Your session has expired.');
+    router.replace('/Login');
+  };
+
+  // Periodic session check
+  useEffect(() => {
+    const interval = setInterval(() => handleSessionCheck(), 10000); // Check every 10 seconds
+    return () => clearInterval(interval); // Cleanup interval
+  }, []);
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Text
+          style={[
+            styles.toggleText,
+            !isSignUp && styles.activeToggleText,
+          ]}
+          onPress={() => setIsSignUp(false)}
+        >
+          Log In
+        </Text>
+        <Text
+          style={[
+            styles.toggleText,
+            isSignUp && styles.activeToggleText,
+          ]}
+          onPress={() => setIsSignUp(true)}
+        >
+          Sign Up
+        </Text>
+      </View>
+
+      <View style={styles.cardWrap}>
+        <View style={styles.card}>
+          {isSignUp ? (
+            <View style={styles.centerWrap}>
+              <Text style={styles.heading}>Sign Up</Text>
+              <View style={styles.formGroup}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Username or email"
+                  placeholderTextColor="#c4c3ca"
+                  keyboardType="email-address"
+                />
+                <Ionicons name="mail-outline" size={20} style={styles.inputIonicons} />
+              </View>
+              <View style={styles.formGroup}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Your Password"
+                  placeholderTextColor="#c4c3ca"
+                  secureTextEntry
+                />
+                <Ionicons name="lock-closed-outline" size={20} style={styles.inputIonicons} />
+              </View>
+              <TouchableOpacity style={styles.button}>
+                <Text style={styles.buttonText}>Submit</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.centerWrap}>
+              <Text style={styles.heading}>Log In</Text>
+              <View style={styles.formGroup}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="username"
+                  value={username}
+                  onChangeText={setUsername} // Update state
+                  placeholderTextColor="#c4c3ca"
+                  keyboardType="email-address"
+                />
+                <Ionicons name="mail-outline" size={20} style={styles.inputIonicons} />
+              </View>
+              <View style={styles.formGroup}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="password"
+                  value={password}
+                  onChangeText={setPassword} // Update state
+                  placeholderTextColor="#c4c3ca"
+                  secureTextEntry
+                />
+                <Ionicons name="lock-closed-outline" size={20} style={styles.inputIonicons} />
+              </View>
+              <TouchableOpacity style={styles.button}onPress={handleLogin}>
+                <Text style={styles.buttonText} >Submit</Text>
+              </TouchableOpacity>
+              <TouchableOpacity>
+                <Text style={styles.link}>Forgot your password?</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1f2029',
+    padding: 20,
+  },
+  header: {
+    flexDirection: 'row',
+    marginBottom: 20,
+  },
+  toggleText: {
+    color: '#c4c3ca',
+    fontSize: 16,
+    marginHorizontal: 20,
+  },
+  activeToggleText: {
+    color: '#ffeba7',
+    fontWeight: 'bold',
+  },
+  cardWrap: {
+    width: '100%',
+    maxWidth: 440,
+    height: 400,
+  },
+  card: {
+    flex: 1,
+    backgroundColor: '#2a2b38',
+    borderRadius: 6,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+  },
+  centerWrap: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  heading: {
+    fontSize: 24,
+    fontWeight: '600',
+    color: '#ffeba7',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  formGroup: {
+    position: 'relative',
+    marginBottom: 20,
+  },
+  input: {
+    height: 48,
+    paddingLeft: 40,
+    paddingHorizontal: 20,
+    backgroundColor: '#1f2029',
+    borderRadius: 4,
+    color: '#c4c3ca',
+    fontSize: 14,
+    fontWeight: '500',
+    shadowColor: '#151515',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+  },
+  inputIonicons: {
+    position: 'absolute',
+    left: 10,
+    top: 14,
+    color: '#ffeba7',
+  },
+  button: {
+    height: 44,
+    borderRadius: 4,
+    backgroundColor: '#ffeba7',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 30,
+  },
+  buttonText: {
+    color: '#102770',
+    fontSize: 13,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  link: {
+    color: '#c4c3ca',
+    marginTop: 10,
+    textAlign: 'center',
+    textDecorationLine: 'underline',
+  },
+});
+
+
+integrate them like messages are encrypted using rsa and aes encyption and are stored in mongo db and recover after login again with login credentials using (username password)or(one time password after adding phone no. ) and after login go to dashboard with side bar or bubble of chat with option of entering room code or create room in which anone with login can join room with room code
