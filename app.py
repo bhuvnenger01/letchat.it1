@@ -6,9 +6,6 @@ import bcrypt
 from pymongo import MongoClient
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives import hashes
 import base64
 import os
 import datetime
@@ -86,6 +83,13 @@ def on_join(data):
     room = data['room']
     join_room(room)
     send(f"{username} has joined the room.", to=room)
+
+@socketio.on('leave')
+def on_leave(data):
+    username = data['username']
+    room = data['room']
+    leave_room(room)
+    send(f"{username} has left the room.", to=room)
 
 
 @socketio.on('message')
